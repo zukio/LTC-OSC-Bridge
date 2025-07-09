@@ -4,5 +4,6 @@
   "osc_address": "/ltc",
   "audio_device_index": 1,
   "channel": 0,
-  "sample_rate": 48000
+  "sample_rate": 48000,
+  "fps": 30
 }

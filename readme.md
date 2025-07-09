@@ -26,3 +26,20 @@ LTC（Linear Timecode）信号を**オーディオ入力からリアルタイム
 
 ```bash
 pip install pyaudio python-osc
+```
+
+## Configuration
+
+`config.json` で次の項目を設定できます。
+
+```json
+{
+  "osc_ip": "127.0.0.1",
+  "osc_port": 9000,
+  "osc_address": "/ltc",
+  "audio_device_index": 1,
+  "channel": 0,
+  "sample_rate": 48000,
+  "fps": 30
+}
+```
