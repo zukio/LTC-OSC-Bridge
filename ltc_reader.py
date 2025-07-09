@@ -6,12 +6,80 @@ import logging
 import os
 import platform
 import signal
+import threading
 import time
+import asyncio
 
 import pyaudio
 from pythonosc import udp_client
 
+try:
+    from PIL import Image, ImageDraw
+    import pystray
+except Exception:  # noqa: W0703
+    pystray = None
+
+from modules.communication.ipc_client import check_existing_instance
+from modules.communication.ipc_server import start_server
+
 LTC_FRAME_BIT_COUNT = 80
+
+INSTANCE_PORT = 12321
+INSTANCE_KEY = "LTCOSCReader"
+
+_ipc_loop = None
+_tray_icon = None
+
+
+def _create_image():
+    """Create tray icon image."""
+    image = Image.new("RGB", (64, 64), (0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((8, 8, 56, 56), fill=(0, 128, 255))
+    return image
+
+
+def _setup_tray(settings, exit_cb):
+    """Start system tray icon."""
+    if pystray is None:
+        return None
+
+    icon = pystray.Icon("ltc_reader", _create_image(), "LTC Reader")
+
+    settings_menu = pystray.Menu(
+        pystray.MenuItem(
+            f"OSC {settings['osc_ip']}:{settings['osc_port']}",
+            None,
+            enabled=False,
+        ),
+        pystray.MenuItem(
+            f"Device {settings['audio_device_index']}",
+            None,
+            enabled=False,
+        ),
+        pystray.MenuItem(
+            f"Channel {settings['channel']}",
+            None,
+            enabled=False,
+        ),
+    )
+
+    icon.menu = pystray.Menu(
+        pystray.MenuItem("設定", settings_menu),
+        pystray.MenuItem("Exit", lambda: exit_cb("[Exit] Tray")),
+    )
+
+    threading.Thread(target=icon.run, daemon=True).start()
+    return icon
+
+
+def _run_ipc_server():
+    """Run IPC server in a dedicated event loop."""
+    global _ipc_loop
+    _ipc_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_ipc_loop)
+    _ipc_loop.create_task(start_server(INSTANCE_PORT, INSTANCE_KEY))
+    _ipc_loop.run_forever()
 
 
 class LTCFrame(ctypes.Structure):
@@ -198,11 +266,42 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="LTC to OSC bridge")
     parser.add_argument("--config", required=True, help="path to config.json")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO,
-                        format="[%(levelname)s] %(message)s")
+
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     config = load_config(args.config)
+
+    # check existing instance
+    if check_existing_instance(INSTANCE_PORT, INSTANCE_KEY):
+        print("既に起動しています。")
+        return
+
+    server_thread = threading.Thread(target=_run_ipc_server, daemon=True)
+    server_thread.start()
+
     reader = LTCReader(config)
-    reader.loop()
+
+    def exit_handler(reason: str):
+        global _tray_icon
+        logging.info("Shutting down: %s", reason)
+        reader.running = False
+        if _tray_icon:
+            _tray_icon.stop()
+            _tray_icon = None
+        if _ipc_loop:
+            _ipc_loop.call_soon_threadsafe(_ipc_loop.stop)
+        server_thread.join(timeout=1)
+
+    signal.signal(
+        signal.SIGINT, lambda sig, frame: exit_handler("[Exit] Signal Interrupt")
+    )
+
+    global _tray_icon
+    _tray_icon = _setup_tray(config, exit_handler)
+
+    try:
+        reader.loop()
+    finally:
+        exit_handler("[Exit] Normal")
 
 
 if __name__ == "__main__":
