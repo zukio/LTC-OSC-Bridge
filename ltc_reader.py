@@ -18,6 +18,7 @@ except Exception:  # noqa: W0703
 
 from modules.communication.ipc_client import check_existing_instance
 from modules.communication.ipc_server import start_server
+from modules.audio_devices import get_device_name, list_input_devices
 from modules.ltc import LibLTC, find_libltc
 
 INSTANCE_PORT = 12321
@@ -36,7 +37,7 @@ def _create_image():
     return image
 
 
-def _setup_tray(settings, exit_cb):
+def _setup_tray(settings, exit_cb, device_name=None):
     """Start system tray icon."""
     if pystray is None:
         return None
@@ -50,7 +51,12 @@ def _setup_tray(settings, exit_cb):
             enabled=False,
         ),
         pystray.MenuItem(
-            f"Device {settings['audio_device_index']}",
+            f"Address {settings['osc_address']}",
+            None,
+            enabled=False,
+        ),
+        pystray.MenuItem(
+            f"Device {device_name or settings['audio_device_index']}",
             None,
             enabled=False,
         ),
@@ -117,9 +123,13 @@ class LTCReader:
             logging.error("Audio device index not specified")
             raise SystemExit(1)
         info = self.pa.get_device_info_by_index(self.device_index)
+        self.device_name = get_device_name(self.device_index) or info.get("name")
         self.num_channels = int(info.get("maxInputChannels", 1))
-        logging.info("Input device: '%s' (index: %d)",
-                     info.get("name"), self.device_index)
+        logging.info(
+            "Input device: '%s' (index: %d)",
+            self.device_name,
+            self.device_index,
+        )
         self.stream = self.pa.open(
             format=pyaudio.paInt16,
             channels=self.num_channels,
@@ -209,7 +219,7 @@ def main() -> None:
     )
 
     global _tray_icon
-    _tray_icon = _setup_tray(config, exit_handler)
+    _tray_icon = _setup_tray(config, exit_handler, reader.device_name)
 
     try:
         reader.loop()
