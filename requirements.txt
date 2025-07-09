@@ -1,2 +1,4 @@
 pyaudio
 python-osc
+pystray
+pillow
