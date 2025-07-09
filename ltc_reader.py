@@ -28,6 +28,7 @@ INSTANCE_PORT = 12321
 INSTANCE_KEY = "LTCOSCReader"
 
 _ipc_loop = None
+_ipc_server_task = None
 _tray_icon = None
 
 
@@ -75,11 +76,22 @@ def _setup_tray(settings, exit_cb):
 
 def _run_ipc_server():
     """Run IPC server in a dedicated event loop."""
-    global _ipc_loop
+    global _ipc_loop, _ipc_server_task
     _ipc_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_ipc_loop)
-    _ipc_loop.create_task(start_server(INSTANCE_PORT, INSTANCE_KEY))
-    _ipc_loop.run_forever()
+    _ipc_server_task = _ipc_loop.create_task(
+        start_server(INSTANCE_PORT, INSTANCE_KEY)
+    )
+    try:
+        _ipc_loop.run_forever()
+    finally:
+        if _ipc_server_task:
+            _ipc_server_task.cancel()
+            try:
+                _ipc_loop.run_until_complete(_ipc_server_task)
+            except Exception:
+                pass
+        _ipc_loop.close()
 
 
 class LTCFrame(ctypes.Structure):
@@ -288,6 +300,10 @@ def main() -> None:
             _tray_icon.stop()
             _tray_icon = None
         if _ipc_loop:
+            def _cancel_server():
+                if _ipc_server_task:
+                    _ipc_server_task.cancel()
+            _ipc_loop.call_soon_threadsafe(_cancel_server)
             _ipc_loop.call_soon_threadsafe(_ipc_loop.stop)
         server_thread.join(timeout=1)
 
