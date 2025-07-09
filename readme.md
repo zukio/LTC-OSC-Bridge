@@ -25,7 +25,7 @@ LTC（Linear Timecode）信号を**オーディオ入力からリアルタイム
 ## Installation
 
 ```bash
-pip install pyaudio python-osc
+pip install -r requirements.txt
 ```
 
 ## Configuration
