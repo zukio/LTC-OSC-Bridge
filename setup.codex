@@ -1,0 +1,15 @@
+#!/bin/bash
+set -e
+
+# --- OSパッケージのインストール ---
+# Pillowに必要なCライブラリ類（libjpeg, zlibなど）
+apt-get update
+apt-get install -y python3-dev
+
+# --- Python仮想環境作成と有効化 ---
+python3 -m venv venv
+source venv/bin/activate
+
+# --- pipのアップグレードと依存インストール ---
+pip install --upgrade pip
+pip install -r requirements.txt
