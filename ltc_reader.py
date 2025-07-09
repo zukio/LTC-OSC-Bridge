@@ -65,6 +65,16 @@ def _setup_tray(settings, exit_cb, device_name=None):
             None,
             enabled=False,
         ),
+        pystray.MenuItem(
+            f"Rate {settings['sample_rate']}Hz",
+            None,
+            enabled=False,
+        ),
+        pystray.MenuItem(
+            f"FPS {settings.get('fps', 30)}",
+            None,
+            enabled=False,
+        ),
     )
 
     icon.menu = pystray.Menu(
@@ -138,8 +148,8 @@ class LTCReader:
             input_device_index=self.device_index,
             frames_per_buffer=self.chunk_size,
         )
-        fps = 30.0
-        self.decoder = LibLTC(find_libltc(), self.sample_rate, fps)
+        self.fps = float(config.get("fps", 30))
+        self.decoder = LibLTC(find_libltc(), self.sample_rate, self.fps)
         self.osc = OSCClient(
             config.get("osc_ip", "127.0.0.1"),
             int(config.get("osc_port", 9000)),
