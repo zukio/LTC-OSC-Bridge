@@ -24,17 +24,19 @@ LTC（Linear Timecode）信号を**オーディオ入力からリアルタイム
 
 ## Installation
 
-```bash
-pip install -r requirements.txt
-```
+Release版のバイナリは [Releases](https://github.com/yourusername/LTC-OSC-Bridge/releases) からダウンロードできます。
 
-### ブランチ
+---
 
-- `main`: タスクトレイアプリケーション（タスクトレイから設定値を編集可）
-- ` savepoint`: タスクトレイアプリケーション（タスクトレイから変更不可）
-- `dev`: LTC信号をOSCのパースするPythonスクリプトのみ（他プロジェクト組み込み用）
+## Usage
 
-## Configuration
+### 必要条件
+
+- Windows 10+
+- `.exe` と同じ階層に `libs/libltc.dll` があること
+- オーディオデバイスにLTC音声が流れていること
+
+### Configuration
 
 `config.json` で次の項目を設定できます。実行中はトレイメニューから
 GUI設定ウィンドウを開き、値を変更して保存すると自動的に再起動します。
@@ -50,3 +52,17 @@ GUI設定ウィンドウを開き、値を変更して保存すると自動的�
   "fps": 30
 }
 ```
+
+## 開発・カスタマイズ
+
+リポジトリをクローンして、必要なパッケージをインストールします。
+
+```bash
+pip install -r requirements.txt
+```
+
+### 各ブランチの用途
+
+- `main`: タスクトレイアプリケーション（タスクトレイから設定値を編集可）
+- `savepoint`: タスクトレイアプリケーション（タスクトレイから変更不可）
+- `dev`: LTC信号をOSCのパースするPythonスクリプトのみ（他プロジェクト組み込み用）
