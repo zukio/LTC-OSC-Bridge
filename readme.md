@@ -24,7 +24,7 @@ LTC（Linear Timecode）信号を**オーディオ入力からリアルタイム
 
 ## Installation
 
-Release版のバイナリは [Releases](https://github.com/yourusername/LTC-OSC-Bridge/releases) からダウンロードできます。
+Release版のバイナリは [Releases](https://github.com/zukio/LTC-OSC-Bridge/releases/) からダウンロードできます。
 
 ---
 
