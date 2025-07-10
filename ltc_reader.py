@@ -32,10 +32,14 @@ INSTANCE_KEY = "LTCOSCReader"
 _ipc_loop = None
 _ipc_server_task = None
 _tray_icon = None
+_restart_event = threading.Event()
 
 
-def _open_settings_window(config_path: str) -> None:
-    """Open a small Tkinter window to edit configuration."""
+def _open_settings_window(config_path: str, restart_cb) -> None:
+    """Open a small Tkinter window to edit configuration.
+
+    ``restart_cb`` will be called after saving to trigger a restart.
+    """
     if tk is None:
         logging.error("tkinter is not available")
         return
@@ -107,6 +111,7 @@ def _open_settings_window(config_path: str) -> None:
                 json.dump(new_cfg, fh, indent=2)
             messagebox.showinfo("LTC OSC", "設定を保存しました")
             win.destroy()
+            restart_cb()
         except Exception as exc:  # noqa: W0703
             messagebox.showerror("Error", str(exc))
 
@@ -124,7 +129,7 @@ def _create_image():
     return image
 
 
-def _setup_tray(settings, exit_cb, config_path, device_name=None):
+def _setup_tray(settings, exit_cb, config_path, restart_cb, device_name=None):
     """Start system tray icon."""
     if pystray is None:
         return None
@@ -169,7 +174,9 @@ def _setup_tray(settings, exit_cb, config_path, device_name=None):
         pystray.MenuItem(
             "設定変更...",
             lambda: threading.Thread(
-                target=_open_settings_window, args=(config_path,), daemon=True
+                target=_open_settings_window,
+                args=(config_path, restart_cb),
+                daemon=True,
             ).start(),
         ),
         pystray.MenuItem("Exit", lambda: exit_cb("[Exit] Tray")),
@@ -284,18 +291,8 @@ def load_config(path: str) -> dict:
         return json.load(fh)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="LTC to OSC bridge")
-    parser.add_argument("--config", required=True, help="path to config.json")
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-    config = load_config(args.config)
-
-    # check existing instance
-    if check_existing_instance(INSTANCE_PORT, INSTANCE_KEY):
-        print("既に起動しています。")
-        return
+def _run_once(config_path: str) -> None:
+    config = load_config(config_path)
 
     server_thread = threading.Thread(target=_run_ipc_server, daemon=True)
     server_thread.start()
@@ -317,17 +314,41 @@ def main() -> None:
             _ipc_loop.call_soon_threadsafe(_ipc_loop.stop)
         server_thread.join(timeout=1)
 
+    def restart_cb() -> None:
+        _restart_event.set()
+        reader.running = False
+
     signal.signal(
         signal.SIGINT, lambda sig, frame: exit_handler("[Exit] Signal Interrupt")
     )
 
     global _tray_icon
-    _tray_icon = _setup_tray(config, exit_handler, args.config, reader.device_name)
+    _tray_icon = _setup_tray(
+        config, exit_handler, config_path, restart_cb, reader.device_name
+    )
 
     try:
         reader.loop()
     finally:
         exit_handler("[Exit] Normal")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="LTC to OSC bridge")
+    parser.add_argument("--config", required=True, help="path to config.json")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+
+    if check_existing_instance(INSTANCE_PORT, INSTANCE_KEY):
+        print("既に起動しています。")
+        return
+
+    while True:
+        _run_once(args.config)
+        if not _restart_event.is_set():
+            break
+        _restart_event.clear()
 
 
 if __name__ == "__main__":
