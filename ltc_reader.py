@@ -6,6 +6,11 @@ import signal
 import threading
 import time
 import asyncio
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+except Exception:  # noqa: W0703
+    tk = None
 
 import pyaudio
 from pythonosc import udp_client
@@ -29,6 +34,88 @@ _ipc_server_task = None
 _tray_icon = None
 
 
+def _open_settings_window(config_path: str) -> None:
+    """Open a small Tkinter window to edit configuration."""
+    if tk is None:
+        logging.error("tkinter is not available")
+        return
+
+    cfg = load_config(config_path)
+
+    devices = list_input_devices()
+    device_names = [name for _, name in devices]
+    idx_to_name = {idx: name for idx, name in devices}
+    name_to_idx = {name: idx for idx, name in devices}
+
+    win = tk.Tk()
+    win.title("LTC OSC Settings")
+
+    # OSC IP
+    tk.Label(win, text="OSC IP").grid(row=0, column=0, sticky="w")
+    ip_var = tk.StringVar(value=cfg.get("osc_ip", "127.0.0.1"))
+    tk.Entry(win, textvariable=ip_var).grid(row=0, column=1, pady=2, padx=5)
+
+    # OSC Port
+    tk.Label(win, text="OSC Port").grid(row=1, column=0, sticky="w")
+    port_var = tk.StringVar(value=str(cfg.get("osc_port", 9000)))
+    tk.Entry(win, textvariable=port_var).grid(row=1, column=1, pady=2, padx=5)
+
+    # OSC Address
+    tk.Label(win, text="OSC Address").grid(row=2, column=0, sticky="w")
+    addr_var = tk.StringVar(value=cfg.get("osc_address", "/ltc"))
+    tk.Entry(win, textvariable=addr_var).grid(row=2, column=1, pady=2, padx=5)
+
+    # Audio device
+    tk.Label(win, text="Audio Device").grid(row=3, column=0, sticky="w")
+    current_name = idx_to_name.get(cfg.get("audio_device_index"),
+                                   device_names[0] if device_names else "")
+    device_var = tk.StringVar(value=current_name)
+    ttk.Combobox(win, textvariable=device_var, values=device_names,
+                 state="readonly").grid(row=3, column=1, pady=2, padx=5)
+
+    # Channel
+    tk.Label(win, text="Channel").grid(row=4, column=0, sticky="w")
+    channel_var = tk.StringVar(value=str(cfg.get("channel", 0)))
+    ttk.Combobox(win, textvariable=channel_var, values=["0", "1"],
+                 state="readonly").grid(row=4, column=1, pady=2, padx=5)
+
+    # Sample rate
+    tk.Label(win, text="Sample Rate").grid(row=5, column=0, sticky="w")
+    sr_var = tk.StringVar(value=str(cfg.get("sample_rate", 48000)))
+    ttk.Combobox(win, textvariable=sr_var, values=["44100", "48000"],
+                 state="readonly").grid(row=5, column=1, pady=2, padx=5)
+
+    # FPS
+    tk.Label(win, text="FPS").grid(row=6, column=0, sticky="w")
+    fps_display = ["24", "25", "23.976", "29.97ndf", "30", "59.97", "60"]
+    fps_var = tk.StringVar(value=str(cfg.get("fps", 30)))
+    ttk.Combobox(win, textvariable=fps_var, values=fps_display,
+                 state="readonly").grid(row=6, column=1, pady=2, padx=5)
+
+    def on_save():
+        new_cfg = {
+            "osc_ip": ip_var.get(),
+            "osc_port": int(port_var.get()),
+            "osc_address": addr_var.get(),
+            "audio_device_index": name_to_idx.get(device_var.get(), 0),
+            "channel": int(channel_var.get()),
+            "sample_rate": int(sr_var.get()),
+            "fps": float(fps_var.get().replace("ndf", "")),
+        }
+        try:
+            with open(config_path, "w", encoding="utf-8") as fh:
+                json.dump(new_cfg, fh, indent=2)
+            messagebox.showinfo("LTC OSC", "設定を保存しました")
+            win.destroy()
+        except Exception as exc:  # noqa: W0703
+            messagebox.showerror("Error", str(exc))
+
+    tk.Button(win, text="更新", command=on_save).grid(row=7, column=0,
+                                                  columnspan=2, pady=5)
+
+    win.mainloop()
+
+
 def _create_image():
     """Create tray icon image."""
     image = Image.new("RGB", (64, 64), (0, 0, 0))
@@ -37,7 +124,7 @@ def _create_image():
     return image
 
 
-def _setup_tray(settings, exit_cb, device_name=None):
+def _setup_tray(settings, exit_cb, config_path, device_name=None):
     """Start system tray icon."""
     if pystray is None:
         return None
@@ -79,6 +166,12 @@ def _setup_tray(settings, exit_cb, device_name=None):
 
     icon.menu = pystray.Menu(
         pystray.MenuItem("設定", settings_menu),
+        pystray.MenuItem(
+            "設定変更...",
+            lambda: threading.Thread(
+                target=_open_settings_window, args=(config_path,), daemon=True
+            ).start(),
+        ),
         pystray.MenuItem("Exit", lambda: exit_cb("[Exit] Tray")),
     )
 
@@ -229,7 +322,7 @@ def main() -> None:
     )
 
     global _tray_icon
-    _tray_icon = _setup_tray(config, exit_handler, reader.device_name)
+    _tray_icon = _setup_tray(config, exit_handler, args.config, reader.device_name)
 
     try:
         reader.loop()
