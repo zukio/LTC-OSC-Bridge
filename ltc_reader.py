@@ -130,6 +130,7 @@ def _create_image():
 
 
 def _setup_tray(settings, exit_cb, config_path, restart_cb, device_name=None):
+
     """Start system tray icon."""
     if pystray is None:
         return None
