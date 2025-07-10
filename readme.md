@@ -1,6 +1,6 @@
 # LTC-OSC-Bridge (Python + libltc)
 
-LTC（Linear Timecode）信号を**オーディオ入力からリアルタイム解析**し、**OSCプロトコル**で他アプリ（Node-RED / TouchDesigner など）に送信するためのPythonツールです。
+LTC（Linear Timecode）信号を**オーディオ入力からリアルタイム解析**し、**OSCプロトコル**で他アプリ（Node-RED / TouchDesigner など）に送信するためのツールです。Windowsではタスクトレイアプリケーションとして動作し、設定値をGUIから変更できます。
 
 ---
 
