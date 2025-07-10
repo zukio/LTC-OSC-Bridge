@@ -28,11 +28,16 @@ LTC（Linear Timecode）信号を**オーディオ入力からリアルタイム
 pip install -r requirements.txt
 ```
 
+### ブランチ
+
+- `main`: タスクトレイアプリケーション（タスクトレイから設定値を編集可）
+- ` savepoint`: タスクトレイアプリケーション（タスクトレイから変更不可）
+- `dev`: LTC信号をOSCのパースするPythonスクリプトのみ（他プロジェクト組み込み用）
+
 ## Configuration
 
 `config.json` で次の項目を設定できます。実行中はトレイメニューから
 GUI設定ウィンドウを開き、値を変更して保存すると自動的に再起動します。
-
 
 ```json
 {
