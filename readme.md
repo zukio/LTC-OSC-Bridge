@@ -30,7 +30,8 @@ pip install -r requirements.txt
 
 ## Configuration
 
-`config.json` で次の項目を設定できます。
+`config.json` で次の項目を設定できます。実行中はトレイメニューから
+GUI設定ウィンドウを開き、値を変更して保存すると自動的に再起動します。
 
 ```json
 {
