@@ -6,6 +6,7 @@ import signal
 import threading
 import time
 import asyncio
+import os
 try:
     import tkinter as tk
     from tkinter import ttk, messagebox
@@ -28,6 +29,17 @@ from modules.ltc import LibLTC, find_libltc
 
 INSTANCE_PORT = 12321
 INSTANCE_KEY = "LTCOSCReader"
+
+# Default configuration used when no config file is found.
+DEFAULT_CONFIG = {
+    "osc_ip": "127.0.0.1",
+    "osc_port": 9000,
+    "osc_address": "/ltc",
+    "audio_device_index": None,
+    "channel": 0,
+    "sample_rate": 48000,
+    "fps": 30,
+}
 
 _ipc_loop = None
 _ipc_server_task = None
@@ -288,8 +300,20 @@ class LTCReader:
 
 
 def load_config(path: str) -> dict:
-    with open(path, 'r', encoding='utf-8') as fh:
-        return json.load(fh)
+    """Load configuration from JSON file or return defaults if missing."""
+    if not os.path.isfile(path):
+        logging.info("Config file '%s' not found, using defaults", path)
+        return DEFAULT_CONFIG.copy()
+    with open(path, "r", encoding="utf-8") as fh:
+        try:
+            data = json.load(fh)
+        except json.JSONDecodeError as exc:
+            logging.error("Failed to parse config file: %s", exc)
+            return DEFAULT_CONFIG.copy()
+    # Merge defaults for missing values
+    cfg = DEFAULT_CONFIG.copy()
+    cfg.update(data)
+    return cfg
 
 
 def _run_once(config_path: str) -> None:
@@ -336,7 +360,11 @@ def _run_once(config_path: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="LTC to OSC bridge")
-    parser.add_argument("--config", required=True, help="path to config.json")
+    parser.add_argument(
+        "--config",
+        default="config.json",
+        help="path to config.json (optional)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
