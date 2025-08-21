@@ -30,11 +30,19 @@ Release版のバイナリは [Releases](https://github.com/zukio/LTC-OSC-Bridge/
 
 ## Usage
 
+1. `ltc_reader.exe` を実行
+2. タスクトレイアイコンから設定を確認／終了
+
 ### 必要条件
 
 - Windows 10+
 - `.exe` と同じ階層に `libs/libltc.dll` があること
 - オーディオデバイスにLTC音声が流れていること
+
+### 推奨構成
+
+- LTC信号のサンプルファイル（例: `LTC.wav`）を任意のプレイヤーで再生
+- または、VB-Audio Virtual Cable を使用し、LTC信号を "CABLE Input" にループバック
 
 ### Configuration
 
