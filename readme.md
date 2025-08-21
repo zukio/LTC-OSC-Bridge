@@ -12,16 +12,6 @@ LTC（Timecode）を**オーディオ入力からリアルタイム解析**し�
 
 ---
 
-## Requirements
-
-- Python 3.9+
-- [libltc](https://github.com/x42/libltc)（Windows: `.dll`, Mac/Linux: `.so`）
-- Python packages:
-  - `pyaudio`
-  - `python-osc`
-
----
-
 ## Installation
 
 Release版のバイナリは [Releases](https://github.com/zukio/LTC-OSC-Bridge/releases/) からダウンロードできます。
@@ -76,3 +66,13 @@ pip install -r requirements.txt
 - `main`: タスクトレイアプリケーション（タスクトレイから設定値を編集可）
 - `savepoint`: タスクトレイアプリケーション（タスクトレイから変更不可）
 - `dev`: LTC信号をOSCのパースするPythonスクリプトのみ（他プロジェクト組み込み用）
+
+---
+
+## Requirements
+
+- Python 3.9+
+- [libltc](https://github.com/x42/libltc)（Windows: `.dll`, Mac/Linux: `.so`）
+- Python packages:
+  - `pyaudio`
+  - `python-osc`
