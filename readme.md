@@ -1,6 +1,6 @@
 # LTC-OSC-Bridge (Python + libltc)
 
-LTC（Linear Timecode）信号を**オーディオ入力からリアルタイム解析**し、**OSCプロトコル**で他アプリ（Node-RED / TouchDesigner など）に送信するためのツールです。Windowsでタスクトレイアプリケーションとして動作し、設定値をGUIから変更できます。
+LTC（Timecode）を**オーディオ入力からリアルタイム解析**し、**OSC**で他アプリ（Node-RED / TouchDesigner など）に送信するためのツールです。Windowsでタスクトレイアプリケーションとして動作し、設定値をGUIから変更できます。
 
 ---
 
@@ -42,7 +42,7 @@ Release版のバイナリは [Releases](https://github.com/zukio/LTC-OSC-Bridge/
 ### 推奨構成
 
 - LTC信号のサンプルファイル（例: `LTC.wav`）を任意のプレイヤーで再生
-- または、VB-Audio Virtual Cable を使用し、LTC信号を "CABLE Input" にループバック
+- VB-Audio Virtual Cable を使用し、LTC信号を "CABLE Input" にループバック
 
 ### Configuration
 
