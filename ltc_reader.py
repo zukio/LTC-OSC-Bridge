@@ -308,14 +308,8 @@ class LTCReader:
 
     def _find_default_input_device(self) -> int | None:
         """利用可能な入力デバイスの中から最初のものを返す"""
-        try:
-            for i in range(self.pa.get_device_count()):
-                info = self.pa.get_device_info_by_index(i)
-                if info.get("maxInputChannels", 0) > 0:
-                    return i
-        except Exception:
-            pass
-        return None
+        devices = list_input_devices()
+        return devices[0][0] if devices else None
 
     def _on_sigint(self, *_):
         self.running = False
