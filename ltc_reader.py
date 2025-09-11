@@ -42,6 +42,8 @@ DEFAULT_CONFIG = {
     "channel": 0,
     "sample_rate": 48000,
     "fps": 30,
+    "timecode_offset": 0.0,
+    "stop_timeout": 0.5,
 }
 
 _ipc_loop = None
@@ -50,10 +52,11 @@ _tray_icon = None
 _restart_event = threading.Event()
 
 
-def _open_settings_window(config_path: str, restart_cb) -> None:
+def _open_settings_window(config_path: str, restart_cb, current_device_index=None) -> None:
     """Open a small Tkinter window to edit configuration.
 
     ``restart_cb`` will be called after saving to trigger a restart.
+    ``current_device_index`` is the actually used device index (may differ from config due to fallback).
     """
     if tk is None:
         logging.error("tkinter is not available")
@@ -86,7 +89,10 @@ def _open_settings_window(config_path: str, restart_cb) -> None:
 
     # Audio device
     tk.Label(win, text="Audio Device").grid(row=3, column=0, sticky="w")
-    current_name = idx_to_name.get(cfg.get("audio_device_index"),
+    # Use actual device index if provided, otherwise use config value
+    actual_device_index = current_device_index if current_device_index is not None else cfg.get(
+        "audio_device_index")
+    current_name = idx_to_name.get(actual_device_index,
                                    device_names[0] if device_names else "")
     device_var = tk.StringVar(value=current_name)
     ttk.Combobox(win, textvariable=device_var, values=device_names,
@@ -111,7 +117,56 @@ def _open_settings_window(config_path: str, restart_cb) -> None:
     ttk.Combobox(win, textvariable=fps_var, values=fps_display,
                  state="readonly").grid(row=6, column=1, pady=2, padx=5)
 
+    # Timecode Offset
+    tk.Label(win, text="Timecode Offset (秒)").grid(row=7, column=0, sticky="w")
+    offset_var = tk.StringVar(value=str(cfg.get("timecode_offset", 0.0)))
+    offset_entry = tk.Entry(win, textvariable=offset_var)
+    offset_entry.grid(row=7, column=1, pady=2, padx=5)
+
+    # Add validation for offset entry
+    def validate_offset(value):
+        try:
+            float(value)
+            return True
+        except ValueError:
+            return value == "" or value == "-"
+
+    vcmd = (win.register(validate_offset), '%P')
+    offset_entry.config(validate='key', validatecommand=vcmd)
+
+    # Stop Timeout
+    tk.Label(win, text="Stop Timeout (秒)").grid(row=8, column=0, sticky="w")
+    timeout_var = tk.StringVar(value=str(cfg.get("stop_timeout", 0.5)))
+    timeout_entry = tk.Entry(win, textvariable=timeout_var)
+    timeout_entry.grid(row=8, column=1, pady=2, padx=5)
+
+    # Add validation for timeout entry
+    def validate_timeout(value):
+        try:
+            val = float(value)
+            return val > 0  # Must be positive
+        except ValueError:
+            return value == ""
+
+    vcmd_timeout = (win.register(validate_timeout), '%P')
+    timeout_entry.config(validate='key', validatecommand=vcmd_timeout)
+
     def on_save():
+        try:
+            offset_value = float(offset_var.get()) if offset_var.get() else 0.0
+        except ValueError:
+            messagebox.showerror("Error", "オフセット値は数値で入力してください")
+            return
+
+        try:
+            timeout_value = float(
+                timeout_var.get()) if timeout_var.get() else 0.5
+            if timeout_value <= 0:
+                raise ValueError("Timeout must be positive")
+        except ValueError:
+            messagebox.showerror("Error", "Stop Timeout は正の数値で入力してください")
+            return
+
         new_cfg = {
             "osc_ip": ip_var.get(),
             "osc_port": int(port_var.get()),
@@ -120,6 +175,8 @@ def _open_settings_window(config_path: str, restart_cb) -> None:
             "channel": int(channel_var.get()),
             "sample_rate": int(sr_var.get()),
             "fps": float(fps_var.get().replace("ndf", "")),
+            "timecode_offset": offset_value,
+            "stop_timeout": timeout_value,
         }
         try:
             with open(config_path, "w", encoding="utf-8") as fh:
@@ -130,7 +187,7 @@ def _open_settings_window(config_path: str, restart_cb) -> None:
         except Exception as exc:  # noqa: W0703
             messagebox.showerror("Error", str(exc))
 
-    tk.Button(win, text="更新", command=on_save).grid(row=7, column=0,
+    tk.Button(win, text="更新", command=on_save).grid(row=9, column=0,
                                                     columnspan=2, pady=5)
 
     win.mainloop()
@@ -144,7 +201,7 @@ def _create_image():
     return image
 
 
-def _setup_tray(settings, exit_cb, config_path, restart_cb, device_name=None):
+def _setup_tray(settings, exit_cb, config_path, restart_cb, device_name=None, reader=None):
     """Start system tray icon."""
     if pystray is None:
         return None
@@ -182,6 +239,11 @@ def _setup_tray(settings, exit_cb, config_path, restart_cb, device_name=None):
             None,
             enabled=False,
         ),
+        pystray.MenuItem(
+            f"Offset {settings.get('timecode_offset', 0.0):.2f}s",
+            None,
+            enabled=False,
+        ),
     )
 
     icon.menu = pystray.Menu(
@@ -190,7 +252,8 @@ def _setup_tray(settings, exit_cb, config_path, restart_cb, device_name=None):
             "設定変更...",
             lambda _icon, _item: threading.Thread(
                 target=_open_settings_window,
-                args=(config_path, restart_cb),
+                args=(config_path, restart_cb,
+                      reader.device_index if reader else None),
                 daemon=True,
             ).start(),
         ),
@@ -198,6 +261,7 @@ def _setup_tray(settings, exit_cb, config_path, restart_cb, device_name=None):
     )
 
     threading.Thread(target=icon.run, daemon=True).start()
+
     return icon
 
 
@@ -225,8 +289,10 @@ class OSCClient:
     def __init__(self, ip: str, port: int, address: str):
         self.client = udp_client.SimpleUDPClient(ip, port)
         self.address = address
+        self.status_address = address + "/status"  # Status messages address
 
     def send(self, message: str):
+        """Send timecode message as string."""
         for attempt in range(3):
             try:
                 self.client.send_message(self.address, message)
@@ -236,9 +302,71 @@ class OSCClient:
                 time.sleep(0.1)
         # give up silently
 
+    def send_status(self, is_running: bool, timecode: str = None):
+        """Send timecode status with optional timecode."""
+        status_msg = "running" if is_running else "stopped"
+        for attempt in range(3):
+            try:
+                if timecode:
+                    # Send as array with status and timecode
+                    self.client.send_message(self.status_address, [
+                                             status_msg, timecode])
+                else:
+                    # Send status only
+                    self.client.send_message(self.status_address, status_msg)
+                return
+            except Exception as exc:
+                logging.warning(
+                    "OSC status send failed (%d/3): %s", attempt + 1, exc)
+                time.sleep(0.1)
+        # give up silently
+
+
+class TimecodeStatusMonitor:
+    """Monitor timecode start/stop status."""
+
+    def __init__(self, timeout=2.0):
+        self.timeout = timeout
+        self.is_running = False
+        self.last_timecode = None
+        self.last_received_time = None
+
+    def update_timecode(self, timecode):
+        """Update with new timecode and check for status changes."""
+        current_time = time.time()
+        status_changed = False
+
+        # Check if timecode has changed (indicating movement)
+        if self.last_timecode != timecode:
+            if not self.is_running:
+                self.is_running = True
+                status_changed = True
+                logging.info("Timecode STARTED")
+
+            self.last_timecode = timecode
+            self.last_received_time = current_time
+
+        # Check for timeout (indicating stop)
+        elif self.last_received_time and (current_time - self.last_received_time) > self.timeout:
+            if self.is_running:
+                self.is_running = False
+                status_changed = True
+                logging.info("Timecode STOPPED")
+
+        return status_changed
+
+    def get_status(self):
+        """Get current status."""
+        return {
+            "is_running": self.is_running,
+            "last_timecode": self.last_timecode,
+            "last_received_time": self.last_received_time
+        }
+
 
 class LTCReader:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, config_path: str = "config.json"):
+        self.config_path = config_path
         self.sample_rate = int(config.get("sample_rate", 48000))
         self.device_index = config.get("audio_device_index")
         self.channel = int(config.get("channel", 0))
@@ -288,21 +416,86 @@ class LTCReader:
             self.device_name,
             self.device_index,
         )
-        self.stream = self.pa.open(
-            format=pyaudio.paInt16,
-            channels=self.num_channels,
-            rate=self.sample_rate,
-            input=True,
-            input_device_index=self.device_index,
-            frames_per_buffer=self.chunk_size,
-        )
+
+        # Try to open audio stream with error handling
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                self.stream = self.pa.open(
+                    format=pyaudio.paInt16,
+                    channels=self.num_channels,
+                    rate=self.sample_rate,
+                    input=True,
+                    input_device_index=self.device_index,
+                    frames_per_buffer=self.chunk_size,
+                )
+                break  # Success, exit retry loop
+            except OSError as e:
+                logging.warning(
+                    f"Failed to open audio stream (attempt {attempt + 1}/{max_attempts}): {e}")
+
+                if attempt == max_attempts - 1:  # Last attempt
+                    # Try to find any available input device
+                    logging.error(
+                        "All attempts failed, searching for any available input device...")
+                    available_devices = list_input_devices()
+
+                    for alt_index, alt_name in available_devices:
+                        if alt_index != self.device_index:  # Skip the failing device
+                            try:
+                                logging.info(
+                                    f"Trying alternative device: '{alt_name}' (index: {alt_index})")
+                                alt_info = self.pa.get_device_info_by_index(
+                                    alt_index)
+
+                                self.stream = self.pa.open(
+                                    format=pyaudio.paInt16,
+                                    channels=min(self.num_channels, int(
+                                        alt_info.get("maxInputChannels", 1))),
+                                    rate=self.sample_rate,
+                                    input=True,
+                                    input_device_index=alt_index,
+                                    frames_per_buffer=self.chunk_size,
+                                )
+
+                                # Update device info if successful
+                                self.device_index = alt_index
+                                self.device_name = alt_name
+                                self.num_channels = int(
+                                    alt_info.get("maxInputChannels", 1))
+
+                                # Update config file with new device index
+                                config["audio_device_index"] = alt_index
+                                self._save_config(config, self.config_path)
+
+                                logging.info(
+                                    f"Successfully using alternative device: '{alt_name}' (index: {alt_index})")
+                                logging.info(
+                                    f"Config updated with new device index: {alt_index}")
+                                break
+
+                            except OSError as alt_e:
+                                logging.warning(
+                                    f"Alternative device {alt_index} also failed: {alt_e}")
+                                continue
+                    else:
+                        # No working device found
+                        logging.error("No working audio input device found")
+                        raise SystemExit(1)
+                    break
         self.fps = float(config.get("fps", 30))
+        self.timecode_offset = float(config.get("timecode_offset", 0.0))
         self.decoder = LibLTC(find_libltc(), self.sample_rate, self.fps)
         self.osc = OSCClient(
             config.get("osc_ip", "127.0.0.1"),
             int(config.get("osc_port", 9000)),
             config.get("osc_address", "/ltc"),
         )
+
+        # Initialize timecode status monitor
+        stop_timeout = float(config.get("stop_timeout", 0.5))
+        self.status_monitor = TimecodeStatusMonitor(timeout=stop_timeout)
+
         self.running = True
         signal.signal(signal.SIGINT, self._on_sigint)
 
@@ -313,6 +506,29 @@ class LTCReader:
 
     def _on_sigint(self, *_):
         self.running = False
+
+    def _apply_timecode_offset(self, hours, minutes, seconds, frames):
+        """Apply offset to timecode and handle wraparound."""
+        # Convert timecode to total seconds
+        total_seconds = hours * 3600 + minutes * 60 + seconds + frames / self.fps
+
+        # Apply offset
+        total_seconds += self.timecode_offset
+
+        # Handle negative values (wrap to previous day)
+        if total_seconds < 0:
+            total_seconds += 24 * 3600  # Add 24 hours
+
+        # Handle values >= 24 hours (wrap to next day)
+        total_seconds = total_seconds % (24 * 3600)
+
+        # Convert back to timecode components
+        new_hours = int(total_seconds // 3600)
+        new_minutes = int((total_seconds % 3600) // 60)
+        new_seconds = int(total_seconds % 60)
+        new_frames = int((total_seconds % 1) * self.fps)
+
+        return new_hours, new_minutes, new_seconds, new_frames
 
     def loop(self):
         logging.info("Starting LTC decode loop...")
@@ -326,9 +542,20 @@ class LTCReader:
             # print("Samples:", samples[:10])
             # print("Samples len:", len(samples))
             for stime in self.decoder.read():
-                tc = f"{stime.hours:02d}:{stime.mins:02d}:{stime.secs:02d}:{stime.frame:02d}"
-                logging.debug("Decoded %s", tc)
-                # print("Decoded %s", tc)
+                # Apply timecode offset
+                hours, minutes, seconds, frames = self._apply_timecode_offset(
+                    stime.hours, stime.mins, stime.secs, stime.frame
+                )
+                tc = f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
+
+                # Monitor status changes
+                status_changed = self.status_monitor.update_timecode(tc)
+                if status_changed:
+                    # Send status with timecode via OSC
+                    self.osc.send_status(self.status_monitor.is_running, tc)
+
+                logging.debug("Decoded %s (offset applied)", tc)
+                # Send timecode only
                 self.osc.send(tc)
         self.close()
 
@@ -337,6 +564,15 @@ class LTCReader:
         self.stream.close()
         self.pa.terminate()
         self.decoder.close()
+
+    def _save_config(self, config: dict, config_path: str = "config.json") -> None:
+        """Save configuration to JSON file."""
+        try:
+            with open(config_path, "w", encoding="utf-8") as fh:
+                json.dump(config, fh, indent=2, ensure_ascii=False)
+            logging.info(f"Config saved to {config_path}")
+        except Exception as e:
+            logging.error(f"Failed to save config: {e}")
 
 
 def load_config(path: str) -> dict:
@@ -362,7 +598,7 @@ def _run_once(config_path: str) -> None:
     server_thread = threading.Thread(target=_run_ipc_server, daemon=True)
     server_thread.start()
 
-    reader = LTCReader(config)
+    reader = LTCReader(config, config_path)
 
     def exit_handler(reason: str):
         global _tray_icon
@@ -390,7 +626,7 @@ def _run_once(config_path: str) -> None:
 
     global _tray_icon
     _tray_icon = _setup_tray(
-        config, exit_handler, config_path, restart_cb, reader.device_name
+        config, exit_handler, config_path, restart_cb, reader.device_name, reader
     )
 
     try:

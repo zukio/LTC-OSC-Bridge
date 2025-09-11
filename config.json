@@ -2,8 +2,10 @@
   "osc_ip": "127.0.0.1",
   "osc_port": 7000,
   "osc_address": "/ltc",
-  "audio_device_index": 34,
-  "channel": 1,
+  "audio_device_index": 46,
+  "channel": 0,
   "sample_rate": 48000,
-  "fps": 29.97
+  "fps": 29.97,
+  "timecode_offset": 0.0,
+  "stop_timeout": 0.5
 }
