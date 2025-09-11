@@ -9,7 +9,8 @@ def list_input_devices():
         for i in range(pa.get_device_count()):
             info = pa.get_device_info_by_index(i)
             if info.get("maxInputChannels", 0) > 0:
-                devices.append((i, info.get("name")))
+                name = info.get("name")
+                devices.append((i, name))
     finally:
         pa.terminate()
     return devices

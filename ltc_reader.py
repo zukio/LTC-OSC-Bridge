@@ -1,3 +1,6 @@
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 import argparse
 import array
 import json
@@ -128,7 +131,7 @@ def _open_settings_window(config_path: str, restart_cb) -> None:
             messagebox.showerror("Error", str(exc))
 
     tk.Button(win, text="更新", command=on_save).grid(row=7, column=0,
-                                                  columnspan=2, pady=5)
+                                                    columnspan=2, pady=5)
 
     win.mainloop()
 
@@ -142,7 +145,6 @@ def _create_image():
 
 
 def _setup_tray(settings, exit_cb, config_path, restart_cb, device_name=None):
-
     """Start system tray icon."""
     if pystray is None:
         return None
@@ -242,11 +244,44 @@ class LTCReader:
         self.channel = int(config.get("channel", 0))
         self.chunk_size = 512
         self.pa = pyaudio.PyAudio()
+
+        # audio_device_index の検証とフォールバック
         if self.device_index is None:
-            logging.error("Audio device index not specified")
-            raise SystemExit(1)
-        info = self.pa.get_device_info_by_index(self.device_index)
-        self.device_name = get_device_name(self.device_index) or info.get("name")
+            # デフォルトデバイスを探す
+            self.device_index = self._find_default_input_device()
+            if self.device_index is None:
+                logging.error("No audio input device available")
+                raise SystemExit(1)
+            logging.warning(
+                "Audio device index not specified, using default device: %d", self.device_index)
+
+        # デバイスの有効性を確認
+        try:
+            info = self.pa.get_device_info_by_index(self.device_index)
+            if info.get("maxInputChannels", 0) <= 0:
+                raise ValueError("Selected device has no input channels")
+        except Exception as e:
+            logging.error("Invalid audio device index %d: %s",
+                          self.device_index, e)
+            # フォールバックデバイスを探す
+            fallback_index = self._find_default_input_device()
+            if fallback_index is not None:
+                logging.warning(
+                    "Falling back to default device: %d", fallback_index)
+                self.device_index = fallback_index
+                info = self.pa.get_device_info_by_index(self.device_index)
+            else:
+                logging.error("No fallback device available")
+                raise SystemExit(1)
+
+        device_name = get_device_name(
+            self.device_index) or info.get("name")
+        # デバイス名の文字化け対策
+        try:
+            self.device_name = device_name.encode(
+                'cp932').decode('utf-8', errors='ignore')
+        except (UnicodeEncodeError, UnicodeDecodeError, AttributeError):
+            self.device_name = f"Device {self.device_index}"
         self.num_channels = int(info.get("maxInputChannels", 1))
         logging.info(
             "Input device: '%s' (index: %d)",
@@ -270,6 +305,17 @@ class LTCReader:
         )
         self.running = True
         signal.signal(signal.SIGINT, self._on_sigint)
+
+    def _find_default_input_device(self) -> int | None:
+        """利用可能な入力デバイスの中から最初のものを返す"""
+        try:
+            for i in range(self.pa.get_device_count()):
+                info = self.pa.get_device_info_by_index(i)
+                if info.get("maxInputChannels", 0) > 0:
+                    return i
+        except Exception:
+            pass
+        return None
 
     def _on_sigint(self, *_):
         self.running = False
@@ -344,7 +390,8 @@ def _run_once(config_path: str) -> None:
         reader.running = False
 
     signal.signal(
-        signal.SIGINT, lambda sig, frame: exit_handler("[Exit] Signal Interrupt")
+        signal.SIGINT, lambda sig, frame: exit_handler(
+            "[Exit] Signal Interrupt")
     )
 
     global _tray_icon
@@ -367,7 +414,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    logging.basicConfig(level=logging.INFO,
+                        format="[%(levelname)s] %(message)s")
 
     if check_existing_instance(INSTANCE_PORT, INSTANCE_KEY):
         print("既に起動しています。")
