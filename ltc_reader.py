@@ -118,7 +118,8 @@ def _open_settings_window(config_path: str, restart_cb, current_device_index=Non
                  state="readonly").grid(row=6, column=1, pady=2, padx=5)
 
     # Timecode Offset
-    tk.Label(win, text="Timecode Offset (秒)").grid(row=7, column=0, sticky="w")
+    tk.Label(win, text="Timecode Offset (秒.フレーム)").grid(
+        row=7, column=0, sticky="w")
     offset_var = tk.StringVar(value=str(cfg.get("timecode_offset", 0.0)))
     offset_entry = tk.Entry(win, textvariable=offset_var)
     offset_entry.grid(row=7, column=1, pady=2, padx=5)
@@ -346,12 +347,29 @@ class TimecodeStatusMonitor:
             self.last_timecode = timecode
             self.last_received_time = current_time
 
+        # Always update last_received_time when we get any timecode
+        else:
+            self.last_received_time = current_time
+
         # Check for timeout (indicating stop)
-        elif self.last_received_time and (current_time - self.last_received_time) > self.timeout:
-            if self.is_running:
-                self.is_running = False
-                status_changed = True
-                logging.info("Timecode STOPPED")
+        # This should only apply when we haven't received new timecode for a while
+        # which is handled separately in the main loop
+
+        return status_changed
+
+    def check_timeout(self):
+        """Check if timecode has timed out and update status accordingly."""
+        if not self.last_received_time:
+            return False
+
+        current_time = time.time()
+        status_changed = False
+
+        # Check for timeout (indicating stop)
+        if self.is_running and (current_time - self.last_received_time) > self.timeout:
+            self.is_running = False
+            status_changed = True
+            logging.info("Timecode STOPPED")
 
         return status_changed
 
@@ -485,6 +503,15 @@ class LTCReader:
                     break
         self.fps = float(config.get("fps", 30))
         self.timecode_offset = float(config.get("timecode_offset", 0.0))
+
+        # Parse timecode_offset: integer part = seconds, decimal part = frames
+        # Example: 1.05 = 1 second + 5 frames
+        offset_seconds = int(self.timecode_offset)
+        offset_frames_decimal = self.timecode_offset - offset_seconds
+
+        # Convert decimal part to frame count (e.g., 0.05 -> 5 frames)
+        # Store original offset value for direct frame calculation in _apply_timecode_offset
+
         self.decoder = LibLTC(find_libltc(), self.sample_rate, self.fps)
         self.osc = OSCClient(
             config.get("osc_ip", "127.0.0.1"),
@@ -495,6 +522,12 @@ class LTCReader:
         # Initialize timecode status monitor
         stop_timeout = float(config.get("stop_timeout", 0.5))
         self.status_monitor = TimecodeStatusMonitor(timeout=stop_timeout)
+
+        # Log offset information for user reference
+        if self.timecode_offset != 0:
+            offset_frames = round(self.timecode_offset * self.fps)
+            logging.info(
+                f"Timecode offset: {self.timecode_offset:.3f}s = {offset_frames} frames @ {self.fps}fps")
 
         self.running = True
         signal.signal(signal.SIGINT, self._on_sigint)
@@ -509,29 +542,48 @@ class LTCReader:
 
     def _apply_timecode_offset(self, hours, minutes, seconds, frames):
         """Apply offset to timecode and handle wraparound."""
-        # Convert timecode to total seconds
-        total_seconds = hours * 3600 + minutes * 60 + seconds + frames / self.fps
+        # Convert timecode to total frames for precise calculation
+        total_frames = hours * 3600 * self.fps + minutes * \
+            60 * self.fps + seconds * self.fps + frames
 
-        # Apply offset
-        total_seconds += self.timecode_offset
+        # Parse offset in decimal format (e.g., 1.05 = 1 second + 5 frames)
+        offset_seconds = int(self.timecode_offset)
+        offset_frames_decimal = self.timecode_offset - offset_seconds
+        offset_frames = int(round(offset_frames_decimal * 100))
+
+        # Calculate total offset frames and apply
+        total_offset_frames = offset_seconds * self.fps + offset_frames
+        total_frames += total_offset_frames
 
         # Handle negative values (wrap to previous day)
-        if total_seconds < 0:
-            total_seconds += 24 * 3600  # Add 24 hours
+        frames_per_day = 24 * 3600 * self.fps
+        if total_frames < 0:
+            total_frames += frames_per_day
 
         # Handle values >= 24 hours (wrap to next day)
-        total_seconds = total_seconds % (24 * 3600)
+        total_frames = total_frames % frames_per_day
 
         # Convert back to timecode components
-        new_hours = int(total_seconds // 3600)
-        new_minutes = int((total_seconds % 3600) // 60)
-        new_seconds = int(total_seconds % 60)
-        new_frames = int((total_seconds % 1) * self.fps)
+        new_hours = int(total_frames // (3600 * self.fps))
+        remaining_frames = total_frames % (3600 * self.fps)
+
+        new_minutes = int(remaining_frames // (60 * self.fps))
+        remaining_frames = remaining_frames % (60 * self.fps)
+
+        new_seconds = int(remaining_frames // self.fps)
+        new_frames = int(remaining_frames % self.fps)
 
         return new_hours, new_minutes, new_seconds, new_frames
 
     def loop(self):
         logging.info("Starting LTC decode loop...")
+
+        # Send initial status message (stopped state)
+        logging.info("Sending initial status: stopped")
+        self.osc.send_status(False)
+
+        last_timeout_check = time.time()
+
         while self.running:
             data = self.stream.read(
                 self.chunk_size, exception_on_overflow=False)
@@ -539,9 +591,13 @@ class LTCReader:
             if self.num_channels > 1:
                 samples = samples[self.channel::self.num_channels]
             self.decoder.write(samples)
+
+            timecode_found = False
+
             # print("Samples:", samples[:10])
             # print("Samples len:", len(samples))
             for stime in self.decoder.read():
+                timecode_found = True
                 # Apply timecode offset
                 hours, minutes, seconds, frames = self._apply_timecode_offset(
                     stime.hours, stime.mins, stime.secs, stime.frame
@@ -552,11 +608,25 @@ class LTCReader:
                 status_changed = self.status_monitor.update_timecode(tc)
                 if status_changed:
                     # Send status with timecode via OSC
+                    logging.info(
+                        f"Sending status: {self.status_monitor.is_running}, timecode: {tc}")
                     self.osc.send_status(self.status_monitor.is_running, tc)
 
                 logging.debug("Decoded %s (offset applied)", tc)
                 # Send timecode only
                 self.osc.send(tc)
+
+            # Check for timeout periodically when no timecode is found
+            current_time = time.time()
+            # Check every 100ms
+            if not timecode_found and (current_time - last_timeout_check) > 0.1:
+                timeout_status_changed = self.status_monitor.check_timeout()
+                if timeout_status_changed:
+                    logging.info(
+                        f"Sending timeout status: {self.status_monitor.is_running}")
+                    self.osc.send_status(
+                        self.status_monitor.is_running, self.status_monitor.last_timecode)
+                last_timeout_check = current_time
         self.close()
 
     def close(self):
