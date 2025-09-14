@@ -289,32 +289,32 @@ def _run_ipc_server():
 class OSCClient:
     def __init__(self, ip: str, port: int, address: str):
         self.client = udp_client.SimpleUDPClient(ip, port)
-        self.address = address
-        self.status_address = address + "/status"  # Status messages address
+        self.base_address = address
+        self.decode_address = address + "/decode"  # Timecode decode results
+        self.status_running_address = address + "/status-running"  # Running status
+        self.status_stopped_address = address + "/status-stopped"  # Stopped status
 
     def send(self, message: str):
-        """Send timecode message as string."""
+        """Send timecode message to /ltc/decode address."""
         for attempt in range(3):
             try:
-                self.client.send_message(self.address, message)
+                self.client.send_message(self.decode_address, message)
                 return
             except Exception as exc:
-                logging.warning("OSC send failed (%d/3): %s", attempt + 1, exc)
+                logging.warning(
+                    "OSC decode send failed (%d/3): %s", attempt + 1, exc)
                 time.sleep(0.1)
         # give up silently
 
     def send_status(self, is_running: bool, timecode: str = None):
-        """Send timecode status with optional timecode."""
-        status_msg = "running" if is_running else "stopped"
+        """Send timecode status to appropriate status address."""
+        address = self.status_running_address if is_running else self.status_stopped_address
+        message = timecode if timecode else (
+            "running" if is_running else "stopped")
+
         for attempt in range(3):
             try:
-                if timecode:
-                    # Send as array with status and timecode
-                    self.client.send_message(self.status_address, [
-                                             status_msg, timecode])
-                else:
-                    # Send status only
-                    self.client.send_message(self.status_address, status_msg)
+                self.client.send_message(address, message)
                 return
             except Exception as exc:
                 logging.warning(
