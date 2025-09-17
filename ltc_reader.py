@@ -612,6 +612,40 @@ class LTCReader:
     def _on_sigint(self, *_):
         self.running = False
 
+    def _is_valid_timecode(self, stime) -> bool:
+        """Validate if timecode data is reasonable."""
+        # Check for basic validity
+        if (stime.hours < 0 or stime.hours > 23 or
+            stime.mins < 0 or stime.mins > 59 or
+            stime.secs < 0 or stime.secs > 59 or
+                stime.frame < 0):
+            return False
+
+        # Check frame count against FPS
+        max_frame = int(self.fps) - \
+            1 if self.fps == int(self.fps) else int(self.fps)
+        if self.fps == 29.97:
+            max_frame = 29
+        elif self.fps == 23.976:
+            max_frame = 23
+        elif self.fps == 59.97:
+            max_frame = 59
+
+        if stime.frame > max_frame:
+            return False
+
+        # Additional validation: Check for suspicious patterns that indicate noise
+        # Only reject clearly invalid patterns like 00:00:00:XX (startup artifacts)
+        if stime.hours == 0 and stime.mins == 0 and stime.secs == 0:
+            # This is likely noise or startup artifact
+            logging.debug(
+                f"Rejecting suspicious startup timecode: {stime.hours:02d}:{stime.mins:02d}:{stime.secs:02d}:{stime.frame:02d}")
+            return False
+
+        # Log that we found a potentially valid timecode
+        logging.debug(f"Timecode passed validation: {stime.hours:02d}:{stime.mins:02d}:{stime.secs:02d}:{stime.frame:02d}")
+        return True
+
     def _apply_timecode_offset(self, hours, minutes, seconds, frames):
         """Apply offset to timecode and handle wraparound."""
         # Convert timecode to total frames for precise calculation
@@ -655,11 +689,15 @@ class LTCReader:
     def loop(self):
         logging.info("Starting LTC decode loop...")
 
-        # Send initial status message (stopped state)
-        logging.info("Sending initial status: stopped")
-        self.osc.send_status("stopped")
+        # Do not send initial status message to avoid unwanted transmission
+        # self.osc.send_status("stopped")  # Commented out to prevent initial transmission
 
         last_timeout_check = time.time()
+        last_sent_timecode = None
+        valid_timecode_received = False  # Track if we've received any valid timecode
+        consecutive_valid_count = 0  # Count consecutive valid timecodes
+        # Require N consecutive valid timecodes before considering it real (reduced from 5 to 2)
+        REQUIRED_CONSECUTIVE_VALID = 2
 
         while self.running:
             data = self.stream.read(
@@ -673,7 +711,28 @@ class LTCReader:
 
             # Process all available timecodes
             for stime in self.decoder.read():
+                # Validate timecode data before processing
+                if not self._is_valid_timecode(stime):
+                    logging.debug(
+                        f"Invalid timecode data ignored: {stime.hours}:{stime.mins}:{stime.secs}:{stime.frame}")
+                    consecutive_valid_count = 0  # Reset counter on invalid data
+                    continue
+
+                # Count consecutive valid timecodes
+                consecutive_valid_count += 1
+
+                # Only process if we have enough consecutive valid timecodes
+                if consecutive_valid_count < REQUIRED_CONSECUTIVE_VALID:
+                    logging.debug(
+                        f"Valid timecode {consecutive_valid_count}/{REQUIRED_CONSECUTIVE_VALID}: {stime.hours:02d}:{stime.mins:02d}:{stime.secs:02d}:{stime.frame:02d}")
+                    continue
+
                 timecode_found = True
+                if not valid_timecode_received:
+                    valid_timecode_received = True  # Mark that we've received valid data
+                    logging.info(
+                        "LTC signal detected - starting timecode transmission")
+
                 # Apply timecode offset
                 hours, minutes, seconds, frames = self._apply_timecode_offset(
                     stime.hours, stime.mins, stime.secs, stime.frame
@@ -698,20 +757,33 @@ class LTCReader:
                     self.osc.send_status(current_status, tc)
 
                 logging.debug("Decoded %s (offset applied)", tc)
-                # Send timecode only
-                self.osc.send(tc)
 
-            # Always check for timeout periodically
-            current_time = time.time()
-            # Check every 100ms
-            if (current_time - last_timeout_check) > 0.1:
-                timeout_status_changed, old_status = self.status_monitor.check_timeout()
-                if timeout_status_changed:
-                    current_status = self.status_monitor.status
-                    logging.info(f"Sending timeout status: {current_status}")
-                    self.osc.send_status(
-                        current_status, self.status_monitor.last_timecode)
-                last_timeout_check = current_time
+                # Send timecode only when it changes (avoid duplicate sends)
+                if tc != last_sent_timecode:
+                    self.osc.send(tc)
+                    last_sent_timecode = tc
+
+            # Only check for timeout if we've previously received valid timecode
+            if valid_timecode_received:
+                current_time = time.time()
+                # Check every 100ms
+                if (current_time - last_timeout_check) > 0.1:
+                    timeout_status_changed, old_status = self.status_monitor.check_timeout()
+                    if timeout_status_changed:
+                        current_status = self.status_monitor.status
+                        logging.info(
+                            f"Sending timeout status: {current_status}")
+                        self.osc.send_status(
+                            current_status, self.status_monitor.last_timecode)
+
+                        # If stopped due to timeout, reset consecutive counter for next detection
+                        if current_status == "stopped":
+                            consecutive_valid_count = 0
+                            valid_timecode_received = False
+                            logging.info(
+                                "LTC signal lost - stopping transmission until new valid signal detected")
+
+                    last_timeout_check = current_time
 
         self.close()
 

@@ -6,6 +6,7 @@
   "channel": 0,
   "sample_rate": 44100,
   "fps": 29.97,
-  "timecode_offset": -0.0,
-  "stop_timeout": 0.1
+  "timecode_offset": 0.0,
+  "stop_timeout": 0.5,
+  "pause_detection_time": 0.2
 }
