@@ -44,6 +44,7 @@ DEFAULT_CONFIG = {
     "fps": 30,
     "timecode_offset": 0.0,
     "stop_timeout": 0.5,
+    "pause_detection_time": 0.2,
 }
 
 _ipc_loop = None
@@ -292,7 +293,9 @@ class OSCClient:
         self.base_address = address
         self.decode_address = address + "/decode"  # Timecode decode results
         self.status_running_address = address + "/status-running"  # Running status
+        self.status_paused_address = address + "/status-paused"  # Paused status
         self.status_stopped_address = address + "/status-stopped"  # Stopped status
+        self.status_reset_address = address + "/status-reset"  # Reset status
 
     def send(self, message: str):
         """Send timecode message to /ltc/decode address."""
@@ -306,11 +309,21 @@ class OSCClient:
                 time.sleep(0.1)
         # give up silently
 
-    def send_status(self, is_running: bool, timecode: str = None):
+    def send_status(self, status: str, timecode: str = None):
         """Send timecode status to appropriate status address."""
-        address = self.status_running_address if is_running else self.status_stopped_address
-        message = timecode if timecode else (
-            "running" if is_running else "stopped")
+        if status == "running":
+            address = self.status_running_address
+        elif status == "paused":
+            address = self.status_paused_address
+        elif status == "stopped":
+            address = self.status_stopped_address
+        elif status == "reset":
+            address = self.status_reset_address
+        else:
+            logging.warning(f"Unknown status: {status}")
+            return
+
+        message = timecode if timecode else status
 
         for attempt in range(3):
             try:
@@ -322,63 +335,81 @@ class OSCClient:
                 time.sleep(0.1)
         # give up silently
 
+    def send_reset(self, timecode: str = "00:00:00:00"):
+        """Send reset status message."""
+        self.send_status("reset", timecode)
+
 
 class TimecodeStatusMonitor:
-    """Monitor timecode start/stop status."""
+    """Monitor timecode start/stop/pause status."""
 
-    def __init__(self, timeout=2.0):
+    def __init__(self, timeout=2.0, pause_detection_time=0.2):
         self.timeout = timeout
-        self.is_running = False
+        self.pause_detection_time = pause_detection_time  # Time to detect pause
+        self.status = "stopped"  # "stopped", "running", "paused"
         self.last_timecode = None
         self.last_received_time = None
+        self.last_change_time = None  # Time when timecode last changed
 
     def update_timecode(self, timecode):
         """Update with new timecode and check for status changes."""
         current_time = time.time()
         status_changed = False
+        reset_detected = False
+        old_status = self.status
 
-        # Check if timecode has changed (indicating movement)
+        # Always update when we receive any timecode
+        self.last_received_time = current_time
+
+        # Check for reset condition (00:00:00:00)
+        if timecode == "00:00:00:00":
+            reset_detected = True
+
+        # Check if timecode value has changed
         if self.last_timecode != timecode:
-            if not self.is_running:
-                self.is_running = True
+            self.last_change_time = current_time
+
+            # If we were stopped or paused and now timecode is changing, we're running
+            if self.status in ["stopped", "paused"]:
+                self.status = "running"
                 status_changed = True
-                logging.info("Timecode STARTED")
-
-            self.last_timecode = timecode
-            self.last_received_time = current_time
-
-        # Always update last_received_time when we get any timecode
+                logging.info(f"Timecode STARTED (from {old_status})")
         else:
-            self.last_received_time = current_time
+            # Same timecode value - check if we should transition to paused
+            if self.status == "running" and self.last_change_time:
+                time_since_change = current_time - self.last_change_time
+                if time_since_change > self.pause_detection_time:
+                    self.status = "paused"
+                    status_changed = True
+                    logging.info("Timecode PAUSED")
 
-        # Check for timeout (indicating stop)
-        # This should only apply when we haven't received new timecode for a while
-        # which is handled separately in the main loop
-
-        return status_changed
+        self.last_timecode = timecode
+        return status_changed, old_status, reset_detected
 
     def check_timeout(self):
         """Check if timecode has timed out and update status accordingly."""
         if not self.last_received_time:
-            return False
+            return False, None
 
         current_time = time.time()
         status_changed = False
+        old_status = self.status
 
         # Check for timeout (indicating stop)
-        if self.is_running and (current_time - self.last_received_time) > self.timeout:
-            self.is_running = False
+        if self.status in ["running", "paused"] and (current_time - self.last_received_time) > self.timeout:
+            self.status = "stopped"
             status_changed = True
             logging.info("Timecode STOPPED")
 
-        return status_changed
+        return status_changed, old_status
 
     def get_status(self):
         """Get current status."""
         return {
-            "is_running": self.is_running,
+            "status": self.status,
             "last_timecode": self.last_timecode,
-            "last_received_time": self.last_received_time
+            "last_received_time": self.last_received_time,
+            "last_change_time": self.last_change_time
         }
 
 
@@ -504,13 +535,9 @@ class LTCReader:
         self.fps = float(config.get("fps", 30))
         self.timecode_offset = float(config.get("timecode_offset", 0.0))
 
-        # Parse timecode_offset: integer part = seconds, decimal part = frames
-        # Example: 1.05 = 1 second + 5 frames
-        offset_seconds = int(self.timecode_offset)
-        offset_frames_decimal = self.timecode_offset - offset_seconds
-
-        # Convert decimal part to frame count (e.g., 0.05 -> 5 frames)
-        # Store original offset value for direct frame calculation in _apply_timecode_offset
+        # Validate and adjust timecode_offset if necessary
+        self.timecode_offset = self._validate_and_adjust_offset(
+            self.timecode_offset, self.fps)
 
         self.decoder = LibLTC(find_libltc(), self.sample_rate, self.fps)
         self.osc = OSCClient(
@@ -521,7 +548,11 @@ class LTCReader:
 
         # Initialize timecode status monitor
         stop_timeout = float(config.get("stop_timeout", 0.5))
-        self.status_monitor = TimecodeStatusMonitor(timeout=stop_timeout)
+        pause_detection_time = float(config.get("pause_detection_time", 0.2))
+        self.status_monitor = TimecodeStatusMonitor(
+            timeout=stop_timeout,
+            pause_detection_time=pause_detection_time
+        )
 
         # Log offset information for user reference
         if self.timecode_offset != 0:
@@ -531,6 +562,47 @@ class LTCReader:
 
         self.running = True
         signal.signal(signal.SIGINT, self._on_sigint)
+
+    def _validate_and_adjust_offset(self, offset, fps):
+        """Validate and adjust timecode offset to ensure frame count is within valid range."""
+        offset_seconds = int(offset)
+        offset_frames_decimal = offset - offset_seconds
+
+        # Convert decimal part to frame count (e.g., 0.05 -> 5 frames)
+        offset_frames = int(round(abs(offset_frames_decimal) * 100))
+
+        # Check if frame count exceeds fps limit
+        # For 29.97fps, valid frames are 0-29, so max_frames = 29
+        max_frames = int(fps) if fps == int(fps) else int(fps) - 1
+        if fps == 29.97:
+            max_frames = 29
+        elif fps == 23.976:
+            max_frames = 23
+        elif fps == 59.97:
+            max_frames = 59
+        else:
+            max_frames = int(fps) - 1
+
+        if offset_frames > max_frames:
+            # Adjust: convert excess frames to seconds
+            excess_frames = offset_frames - max_frames
+            additional_seconds = excess_frames // (max_frames + 1)
+            remaining_frames = excess_frames % (max_frames + 1)
+
+            # Apply sign correction
+            sign = 1 if offset_frames_decimal >= 0 else -1
+            adjusted_seconds = offset_seconds + (additional_seconds * sign)
+            adjusted_frames = remaining_frames if offset_frames_decimal >= 0 else -remaining_frames
+
+            adjusted_offset = adjusted_seconds + (adjusted_frames / 100.0)
+
+            logging.warning(
+                f"Timecode offset adjusted: {offset:.3f} -> {adjusted_offset:.3f} "
+                f"(frames {offset_frames} -> {remaining_frames} @ {fps}fps)"
+            )
+            return adjusted_offset
+
+        return offset
 
     def _find_default_input_device(self) -> int | None:
         """利用可能な入力デバイスの中から最初のものを返す"""
@@ -549,7 +621,12 @@ class LTCReader:
         # Parse offset in decimal format (e.g., 1.05 = 1 second + 5 frames)
         offset_seconds = int(self.timecode_offset)
         offset_frames_decimal = self.timecode_offset - offset_seconds
-        offset_frames = int(round(offset_frames_decimal * 100))
+
+        # Convert decimal part to frame count, handling negative values properly
+        if offset_frames_decimal >= 0:
+            offset_frames = int(round(offset_frames_decimal * 100))
+        else:
+            offset_frames = -int(round(abs(offset_frames_decimal) * 100))
 
         # Calculate total offset frames and apply
         total_offset_frames = offset_seconds * self.fps + offset_frames
@@ -580,7 +657,7 @@ class LTCReader:
 
         # Send initial status message (stopped state)
         logging.info("Sending initial status: stopped")
-        self.osc.send_status(False)
+        self.osc.send_status("stopped")
 
         last_timeout_check = time.time()
 
@@ -594,8 +671,7 @@ class LTCReader:
 
             timecode_found = False
 
-            # print("Samples:", samples[:10])
-            # print("Samples len:", len(samples))
+            # Process all available timecodes
             for stime in self.decoder.read():
                 timecode_found = True
                 # Apply timecode offset
@@ -605,28 +681,38 @@ class LTCReader:
                 tc = f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
 
                 # Monitor status changes
-                status_changed = self.status_monitor.update_timecode(tc)
+                status_changed, old_status, reset_detected = self.status_monitor.update_timecode(
+                    tc)
+
+                # Send reset message if detected
+                if reset_detected:
+                    logging.info(f"Sending reset status: timecode: {tc}")
+                    self.osc.send_reset(tc)
+
+                # Send status change if needed
                 if status_changed:
                     # Send status with timecode via OSC
+                    current_status = self.status_monitor.status
                     logging.info(
-                        f"Sending status: {self.status_monitor.is_running}, timecode: {tc}")
-                    self.osc.send_status(self.status_monitor.is_running, tc)
+                        f"Sending status: {current_status}, timecode: {tc}")
+                    self.osc.send_status(current_status, tc)
 
                 logging.debug("Decoded %s (offset applied)", tc)
                 # Send timecode only
                 self.osc.send(tc)
 
-            # Check for timeout periodically when no timecode is found
+            # Always check for timeout periodically
             current_time = time.time()
             # Check every 100ms
-            if not timecode_found and (current_time - last_timeout_check) > 0.1:
-                timeout_status_changed = self.status_monitor.check_timeout()
+            if (current_time - last_timeout_check) > 0.1:
+                timeout_status_changed, old_status = self.status_monitor.check_timeout()
                 if timeout_status_changed:
-                    logging.info(
-                        f"Sending timeout status: {self.status_monitor.is_running}")
+                    current_status = self.status_monitor.status
+                    logging.info(f"Sending timeout status: {current_status}")
                     self.osc.send_status(
-                        self.status_monitor.is_running, self.status_monitor.last_timecode)
+                        current_status, self.status_monitor.last_timecode)
                 last_timeout_check = current_time
+
         self.close()
 
     def close(self):

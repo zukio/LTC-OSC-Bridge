@@ -19,6 +19,16 @@ def status_running_handler(unused_addr, timecode):
     print(f"Status: running | Timecode: {timecode}")
 
 
+def status_paused_handler(unused_addr, timecode):
+    """Handle paused status messages"""
+    print(f"Status: paused | Timecode: {timecode}")
+
+
+def status_reset_handler(unused_addr, timecode):
+    """Handle reset status messages"""
+    print(f"Status: reset | Timecode: {timecode}")
+
+
 def status_stopped_handler(unused_addr, timecode):
     """Handle stopped status messages"""
     print(f"Status: stopped | Timecode: {timecode}")
@@ -55,6 +65,10 @@ def main():
     dispatcher_obj.map(args.address + "/decode", ltc_decode_handler)
     dispatcher_obj.map(args.address + "/status-running",
                        status_running_handler)
+    dispatcher_obj.map(args.address + "/status-paused",
+                       status_paused_handler)
+    dispatcher_obj.map(args.address + "/status-reset",
+                       status_reset_handler)
     dispatcher_obj.map(args.address + "/status-stopped",
                        status_stopped_handler)
 
@@ -68,6 +82,8 @@ def main():
     print(f"New v2.0 addresses:")
     print(f"  Decode: {args.address}/decode")
     print(f"  Running: {args.address}/status-running")
+    print(f"  Paused: {args.address}/status-paused")
+    print(f"  Reset: {args.address}/status-reset")
     print(f"  Stopped: {args.address}/status-stopped")
     print(f"Legacy v1.x addresses (for compatibility):")
     print(f"  LTC: {args.address}")
